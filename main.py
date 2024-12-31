@@ -1,17 +1,26 @@
-# main.py
 import asyncio
 import time
+import os
+
+# تست نوشتن در فایل برای بررسی دسترسی‌ها
+try:
+    with open("validated_wallets.txt", "a") as file:
+        file.write("Test wallet address\n")
+    print("File write test successful!")
+except Exception as e:
+    print(f"Error during test file write: {e}")
+
 from colorama import Fore, init
-from cryptocompare_api import get_current_price, get_historical_data  # استفاده از توابع CryptoCompare API
+from coinmarketcap_api import get_top_cryptocurrencies
+from coingecko_api import get_coin_id, get_historical_data, get_contract_address
 from etherscan_api import get_normal_transactions, get_wallet_transactions
-from coinmarketcap_api import get_top_cryptocurrencies  # فرض می‌کنیم هنوز از CoinMarketCap برای ارزها استفاده می‌کنیم
 
 # برای فعال کردن رنگ‌ها در ترمینال
 init(autoreset=True)
 
 REQUEST_DELAY = 60  # فاصله بین درخواست‌ها به ثانیه
 
-async def process_wallet(wallet_address, crypto_symbol):
+async def process_wallet(wallet_address):
     """بررسی تراکنش‌های مربوط به یک کیف پول"""
     print(f"Checking transactions for wallet: {wallet_address}")
     wallet_transactions = await get_wallet_transactions(wallet_address)
@@ -23,8 +32,10 @@ async def process_wallet(wallet_address, crypto_symbol):
         
         for tx in wallet_transactions:
             print(f"- From: {tx['from']}, To: {tx['to']}, Timestamp: {tx['timeStamp']}")
-
+            
             # فرض می‌کنیم که خرید و فروش از قرارداد خاصی می‌باشد
+            # تراکنش خرید: از کیف پول به قرارداد (From = Wallet, To = Contract)
+            # تراکنش فروش: از قرارداد به کیف پول (From = Contract, To = Wallet)
             if tx['to'] == wallet_address:  # تراکنش فروش (قرارداد به کیف پول)
                 sell_transaction = tx
             elif tx['from'] == wallet_address:  # تراکنش خرید (کیف پول به قرارداد)
@@ -32,27 +43,14 @@ async def process_wallet(wallet_address, crypto_symbol):
         
         # بررسی اینکه آیا خرید و فروش انجام شده و مقدار ارزهای خرید و فروش برابر است
         if buy_transaction and sell_transaction:
-            buy_value = int(buy_transaction['value'])
-            sell_value = int(sell_transaction['value'])
-
-            # دریافت قیمت ارز از CryptoCompare
-            current_price = get_current_price(crypto_symbol)
-            if current_price is not None:
-                buy_value_in_usd = buy_value * current_price
-                sell_value_in_usd = sell_value * current_price
-
-                print(Fore.CYAN + f"Buy value in USD: {buy_value_in_usd}")
-                print(Fore.CYAN + f"Sell value in USD: {sell_value_in_usd}")
-
-                if buy_value_in_usd == sell_value_in_usd:
-                    print(Fore.GREEN + f"Wallet {wallet_address} has a valid buy and sell transaction.")
-                    with open("validated_wallets.txt", "a") as file:
-                        file.write(f"{wallet_address}\n")
-                    print(Fore.RED + f"Wallet {wallet_address} has been saved to validated_wallets.txt.")
-                else:
-                    print(Fore.RED + f"Wallet {wallet_address} has buy and sell transactions with unequal amounts.")
+            if buy_transaction['value'] == sell_transaction['value']:
+                print(Fore.GREEN + f"Wallet {wallet_address} has a valid buy and sell transaction.")
+                # ذخیره کردن آدرس کیف پول تایید شده در فایل
+                with open("validated_wallets.txt", "a") as file:
+                    file.write(f"{wallet_address}\n")
+                print(Fore.RED + f"Wallet {wallet_address} has been saved to validated_wallets.txt.")
             else:
-                print(Fore.RED + f"Could not fetch current price for {crypto_symbol}.")
+                print(Fore.RED + f"Wallet {wallet_address} has buy and sell transactions with unequal amounts.")
         else:
             print(Fore.RED + f"Wallet {wallet_address} does not have both buy and sell transactions.")
     else:
@@ -73,19 +71,30 @@ async def process_cryptocurrency(crypto, request_queue):
         return
 
     # ادامه پردازش
+    coin_id = get_coin_id(symbol)
+    if not coin_id:
+        print(f"Coin ID for {name} ({symbol}) not found in CoinGecko.")
+        return
+
     print(f"Getting historical data for {name} ({symbol})...")
-    historical_data = get_historical_data(symbol)
-    if not historical_data:
+    historical_data = get_historical_data(coin_id)
+    if not historical_data or not isinstance(historical_data, list):
         print(f"No historical data found for {name} ({symbol}).")
         return
 
-    price_pump_timestamp = historical_data[0]['time']
+    price_pump_timestamp = historical_data[0][0]
     print(f"Price pump timestamp for {name} ({symbol}): {price_pump_timestamp}")
 
+    contract_address = get_contract_address(coin_id)
+    if not contract_address:
+        print(f"No Ethereum contract address found for {symbol}. Skipping to next cryptocurrency.")
+        return
+
+    print(f"Ethereum contract address for {name} ({symbol}): {contract_address}")
     current_time = int(time.time())
     start_time = current_time - 24 * 60 * 60
 
-    transactions = await get_normal_transactions(symbol, start_time, current_time)
+    transactions = await get_normal_transactions(contract_address, start_time, current_time)
     if transactions:
         print(f"Transactions for {name} ({symbol}):")
         wallet_addresses = set()
@@ -95,7 +104,7 @@ async def process_cryptocurrency(crypto, request_queue):
             wallet_addresses.add(tx['to'])
 
         for wallet_address in wallet_addresses:
-            await request_queue.put((process_wallet, (wallet_address, symbol), f"Wallet transactions for {wallet_address}"))
+            await request_queue.put((process_wallet, (wallet_address,), f"Wallet transactions for {wallet_address}"))
     else:
         print(f"No transactions found for {name} ({symbol}).")
 
@@ -139,7 +148,10 @@ async def main():
             print(f"Error processing cryptocurrency {crypto['name']}: {e}")
         finally:
             print("Waiting for 60 seconds before processing the next cryptocurrency...")
-            await asyncio.sleep(REQUEST_DELAY)
+            await asyncio.sleep(60)  # فاصله 60 ثانیه برای پردازش ارزها
+
+
+    worker_task.cancel()
 
 if __name__ == "__main__":
     asyncio.run(main())

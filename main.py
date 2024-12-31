@@ -1,10 +1,20 @@
-#main.py
 import asyncio
 import time
-from cryptocompare_api import get_24h_price_with_interval, find_pumps
+import os
+
+# تست نوشتن در فایل برای بررسی دسترسی‌ها
+try:
+    with open("validated_wallets.txt", "a") as file:
+        file.write("Test wallet address\n")
+    print("File write test successful!")
+except Exception as e:
+    print(f"Error during test file write: {e}")
+
 from colorama import Fore, init
 from coinmarketcap_api import get_top_cryptocurrencies
-from etherscan_api import get_wallet_transactions
+from coingecko_api import get_coin_id, get_historical_data, get_contract_address
+from etherscan_api import get_normal_transactions, get_wallet_transactions
+from cryptocompare_api import get_24h_price_with_interval, find_pumps
 
 # برای فعال کردن رنگ‌ها در ترمینال
 init(autoreset=True)
@@ -61,19 +71,47 @@ async def process_cryptocurrency(crypto, request_queue):
         print(f"Volume for {name} ({symbol}) is less than 1 million USD. Skipping...")
         return
 
-    # ادامه پردازش
-    price_data = get_24h_price_with_interval(symbol)
-    if price_data:
-        #print(f"Price data for {name} ({symbol}): {price_data}")
-        start_time, end_time = find_pumps(price_data)
-        if start_time and end_time:
-            print(Fore.GREEN + f"Pump from {start_time} to {end_time}")
-            print(Fore.GREEN + f"------------------------------------")
-            # جستجو و بررسی تراکنش‌ها در بازه زمانی مشخص
-        else:
-            print("No pump detected.")
-    else:
+    coin_id = get_coin_id(symbol)
+    if not coin_id:
+        print(f"Coin ID for {name} ({symbol}) not found in CoinGecko.")
+        return
+    
+    # استفاده از API CryptoCompare برای گرفتن قیمت‌ها
+    print(f"Getting 24h price data for {name} ({symbol})...")
+    prices = get_24h_price_with_interval(symbol)
+    if not prices:
         print(f"No price data found for {name} ({symbol}).")
+        return
+
+    # یافتن زمان‌های شروع و پایان پامپ
+    start_time, end_time = find_pumps(prices)
+    if start_time and end_time:
+        print(f"Price pump for {name} ({symbol}) occurred from {start_time} to {end_time}.")
+    else:
+        print(f"No price pump found for {name} ({symbol}).")
+
+    contract_address = get_contract_address(coin_id)
+    if not contract_address:
+        print(f"No Ethereum contract address found for {symbol}. Skipping to next cryptocurrency.")
+        return
+
+    print(f"Ethereum contract address for {name} ({symbol}): {contract_address}")
+    current_time = int(time.time())
+    start_time = current_time - 24 * 60 * 60
+
+    transactions = await get_normal_transactions(contract_address, start_time, current_time)
+    if transactions:
+        print(f"Transactions for {name} ({symbol}):")
+        wallet_addresses = set()
+        for tx in transactions:
+            print(f"- From: {tx['from']}, To: {tx['to']}, Timestamp: {tx['timeStamp']}")
+            wallet_addresses.add(tx['from'])
+            wallet_addresses.add(tx['to'])
+
+        for wallet_address in wallet_addresses:
+            await request_queue.put((process_wallet, (wallet_address,), f"Wallet transactions for {wallet_address}"))
+    else:
+        print(f"No transactions found for {name} ({symbol}).")
 
 async def request_worker(request_queue):
     """کارگر صف که درخواست‌ها را با تاخیر پردازش می‌کند"""
@@ -116,6 +154,7 @@ async def main():
         finally:
             print("Waiting for 60 seconds before processing the next cryptocurrency...")
             await asyncio.sleep(60)  # فاصله 60 ثانیه برای پردازش ارزها
+
 
     worker_task.cancel()
 

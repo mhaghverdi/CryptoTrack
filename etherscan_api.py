@@ -1,3 +1,4 @@
+#etherscan_api.py
 import aiohttp  # وارد کردن aiohttp برای استفاده از درخواست‌های غیرهمزمان
 
 ETHERSCAN_API_URL = "https://api.etherscan.io/api"

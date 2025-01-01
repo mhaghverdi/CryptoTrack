@@ -15,13 +15,14 @@ from coinmarketcap_api import get_top_cryptocurrencies
 from coingecko_api import get_coin_id, get_historical_data, get_contract_address
 from etherscan_api import get_normal_transactions, get_wallet_transactions
 from cryptocompare_api import get_24h_price_with_interval, find_pumps
+from datetime import datetime
 
 # برای فعال کردن رنگ‌ها در ترمینال
 init(autoreset=True)
 
 REQUEST_DELAY = 60  # فاصله بین درخواست‌ها به ثانیه
 
-async def process_wallet(wallet_address):
+async def process_wallet(wallet_address, start_time, end_time):
     """بررسی تراکنش‌های مربوط به یک کیف پول"""
     print(f"Checking transactions for wallet: {wallet_address}")
     wallet_transactions = await get_wallet_transactions(wallet_address)
@@ -32,28 +33,19 @@ async def process_wallet(wallet_address):
         sell_transaction = None
         
         for tx in wallet_transactions:
-            print(f"- From: {tx['from']}, To: {tx['to']}, Timestamp: {tx['timeStamp']}")
+            tx_timestamp = int(tx['timeStamp'])
+            print(f"- From: {tx['from']}, To: {tx['to']}, Timestamp: {tx_timestamp}")
             
-            # فرض می‌کنیم که خرید و فروش از قرارداد خاصی می‌باشد
-            # تراکنش خرید: از کیف پول به قرارداد (From = Wallet, To = Contract)
-            # تراکنش فروش: از قرارداد به کیف پول (From = Contract, To = Wallet)
-            if tx['to'] == wallet_address:  # تراکنش فروش (قرارداد به کیف پول)
-                sell_transaction = tx
-            elif tx['from'] == wallet_address:  # تراکنش خرید (کیف پول به قرارداد)
-                buy_transaction = tx
-        
-        # بررسی اینکه آیا خرید و فروش انجام شده و مقدار ارزهای خرید و فروش برابر است
-        if buy_transaction and sell_transaction:
-            if buy_transaction['value'] == sell_transaction['value']:
-                print(Fore.GREEN + f"Wallet {wallet_address} has a valid buy and sell transaction.")
-                # ذخیره کردن آدرس کیف پول تایید شده در فایل
-                with open("validated_wallets.txt", "a") as file:
-                    file.write(f"{wallet_address}\n")
-                print(Fore.RED + f"Wallet {wallet_address} has been saved to validated_wallets.txt.")
-            else:
-                print(Fore.RED + f"Wallet {wallet_address} has buy and sell transactions with unequal amounts.")
-        else:
-            print(Fore.RED + f"Wallet {wallet_address} does not have both buy and sell transactions.")
+            # بررسی تراکنش‌های خرید (کیف پول به قرارداد) و فروش (قرارداد به کیف پول)
+            if start_time and end_time:
+                # بررسی تراکنش خرید: باید قبل از شروع پامپ باشد
+                if tx['from'] == wallet_address and start_time.timestamp() - 3600 <= tx_timestamp <= start_time.timestamp():
+                    print(Fore.YELLOW + f"Buy transaction for wallet {wallet_address} before pump start: {tx}")
+                
+                # بررسی تراکنش فروش: باید بعد از پایان پامپ باشد
+                if tx['to'] == wallet_address and end_time.timestamp() <= tx_timestamp <= end_time.timestamp() + 3600:
+                    print(Fore.YELLOW + f"Sell transaction for wallet {wallet_address} after pump end: {tx}")
+
     else:
         print(f"No transactions found for wallet {wallet_address}.")
 
@@ -86,7 +78,7 @@ async def process_cryptocurrency(crypto, request_queue):
     # یافتن زمان‌های شروع و پایان پامپ
     start_time, end_time = find_pumps(prices)
     if start_time and end_time:
-        print(f"Price pump for {name} ({symbol}) occurred from {start_time} to {end_time}.")
+        print(f"Price pump for {name} ({symbol}) occurred from {start_time.strftime('%Y-%m-%d %H:%M')} to {end_time.strftime('%Y-%m-%d %H:%M')}")
     else:
         print(f"No price pump found for {name} ({symbol}).")
 
@@ -97,9 +89,9 @@ async def process_cryptocurrency(crypto, request_queue):
 
     print(f"Ethereum contract address for {name} ({symbol}): {contract_address}")
     current_time = int(time.time())
-    start_time = current_time - 24 * 60 * 60
+    start_time_timestamp = current_time - 24 * 60 * 60
 
-    transactions = await get_normal_transactions(contract_address, start_time, current_time)
+    transactions = await get_normal_transactions(contract_address, start_time_timestamp, current_time)
     if transactions:
         print(f"Transactions for {name} ({symbol}):")
         wallet_addresses = set()
@@ -109,7 +101,7 @@ async def process_cryptocurrency(crypto, request_queue):
             wallet_addresses.add(tx['to'])
 
         for wallet_address in wallet_addresses:
-            await request_queue.put((process_wallet, (wallet_address,), f"Wallet transactions for {wallet_address}"))
+             await request_queue.put((process_wallet, (wallet_address, start_time, end_time), f"Wallet transactions for {wallet_address}"))
     else:
         print(f"No transactions found for {name} ({symbol}).")
 

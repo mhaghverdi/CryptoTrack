@@ -70,6 +70,6 @@ def find_pumps(prices):
         start_time = current_time - timedelta(hours=start_hours, minutes=start_minutes)
         end_time = current_time - timedelta(hours=end_hours, minutes=end_minutes)
 
-        return start_time.strftime('%Y-%m-%d %H:%M'), end_time.strftime('%Y-%m-%d %H:%M')
+        return start_time, end_time
     else:
         return None, None

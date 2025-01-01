@@ -54,8 +54,7 @@ async def get_normal_transactions(address, start_timestamp, end_timestamp):
         recent_transactions = []
 
         for tx in transactions:
-            timestamp = int(tx["timeStamp"])
-            if start_timestamp <= timestamp <= end_timestamp:  # محدود کردن به 24 ساعت گذشته
+            if start_timestamp <= int(tx["timeStamp"]) <= end_timestamp:  # محدود کردن به 24 ساعت گذشته
                 recent_transactions.append(tx)
 
         return recent_transactions
